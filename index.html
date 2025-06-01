@@ -42,29 +42,24 @@
       max-width: 500px;
       width: 100%;
     }
-    /* This area will either host a VexFlow SVG or a fallback note‐name text */
+    /* This area will host a VexFlow SVG (the stave + note) */
     #notation {
       width: 100%;
       height: 150px;
       margin-bottom: 20px;
       border: 1px solid #aaa; /* Temporary border to show the box */
       background: #fff;
-      position: relative;
     }
-    /* If VexFlow is available, we insert an SVG into #notation; otherwise we place a <div> with the note name. */
-    #notation .fallback-note {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      font-size: 48px;
-      font-weight: bold;
-      color: #333;
-    }
-    /* --- “Listening...” indicator --- */
+    /* --- “Listening...” + “Mic ON” indicator --- */
     #listening-label {
       font-size: 0.9rem;
       color: #27ae60;
+      margin-bottom: 10px;
+      visibility: hidden;
+    }
+    #mic-indicator {
+      font-size: 0.9rem;
+      color: #2980b9;
       margin-bottom: 10px;
       visibility: hidden;
     }
@@ -176,11 +171,12 @@
 <body>
   <h1>🎵 Hum the Note Game 🎵</h1>
   <div id="game-container">
-    <!-- Notation area: either VexFlow or fallback note name -->
+    <!-- Notation area -->
     <div id="notation"></div>
 
     <!-- Listening Indicator -->
     <div id="listening-label">Listening...</div>
+    <div id="mic-indicator">Mic ON</div>
 
     <!-- Pitch Meter -->
     <div id="pitch-meter">
@@ -238,7 +234,7 @@
       return A4_FREQ * Math.pow(2, (m - A4_MIDI) / 12);
     }
 
-    // Precompute note names + frequencies for MIDI 36 (C2) → 84 (C6)
+    // Precompute note names + frequencies from MIDI 36 (C2) to 84 (C6)
     const NOTE_NAMES = [
       'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'
     ];
@@ -249,7 +245,7 @@
       allNotes.push({ midi: m, name: name, freq: midiToFreq(m) });
     }
 
-    // Find the closest note by cents distance
+    // Given a frequency, find the closest note by cents distance
     function findClosestNoteObj(freq) {
       let best = null, bestDist = Infinity;
       for (let note of allNotes) {
@@ -262,13 +258,13 @@
       return { note: best, centsOff: bestDist };
     }
 
-    // Check if freq lies in the semitone bin for targetMidi
+    // Return true if freq lies in the same semitone “bin” as targetMidi
     function isInTargetBin(freq, targetMidi) {
       const candidate = findClosestNoteObj(freq).note;
       return candidate.midi === targetMidi;
     }
 
-    // Ensure an array of freq samples is stable (< thresholdCents excursion)
+    // Check if an array of freq samples is stable (< thresholdCents excursion)
     function isStableFreq(freqArray, thresholdCents = 50) {
       if (freqArray.length < 2) return false;
       const minFreq = Math.min(...freqArray);
@@ -277,7 +273,7 @@
       return centsDiff <= thresholdCents;
     }
 
-    // Convert MIDI to note‐string, e.g. "c/4" for use in VexFlow (if available)
+    // Convert MIDI to a VexFlow–style note string (e.g. "c/4")
     function midiToVexNoteString(midi) {
       const octave = Math.floor(midi / 12) - 1;
       const base = NOTE_NAMES[midi % 12].toLowerCase().replace('#', '#');
@@ -299,7 +295,7 @@
         midiList: lvl1List
       });
 
-      // Each level expands ±2 semitones around the previous range
+      // Each subsequent level expands ±2 semitones
       let low = initialLow, high = initialHigh;
       for (let lvl = 2; lvl <= maxLevels; lvl++) {
         low = Math.max(36, low - 2);
@@ -326,13 +322,13 @@
     let levels = [];
     let octaveShift = 0;          // -1, 0, +1
     let targetMidi = null;
-    let targetVFNote = null;      // For VexFlow (if available)
+    let targetVFNote = null;      // For VexFlow
     let lastHitTimestamps = [];
     let totalHits = 0;
     let timeRemaining = 0;
     let timerInterval = null;
 
-    // For pitch stability: buffer of recent freq samples in one attempt
+    // For stability: buffer of freq samples during one "attempt"
     let freqBuffer = [];
     let isAttemptActive = false;
     let attemptStartTime = null;
@@ -343,6 +339,7 @@
     // HTML Elements
     const notationDiv = document.getElementById("notation");
     const listeningLabel = document.getElementById("listening-label");
+    const micIndicator = document.getElementById("mic-indicator");
     const pitchMeterFill = document.getElementById("pitch-meter-fill");
     const scoreDisplay = document.getElementById("score-display");
     const timerDisplay = document.getElementById("timer-display");
@@ -356,10 +353,10 @@
     const playAgainButton = document.getElementById("play-again-button");
 
     // ---------------------------------------------------
-    // --- INITIALIZE VEXFLOW (IF LOADED) & FALLBACK   ---
+    // --- INITIALIZE VEXFLOW (IF LOADED) & DRAW NOTE  ---
     // ---------------------------------------------------
     function initVisualForTarget() {
-      // If VexFlow is loaded, draw a stave + note.
+      // If VexFlow is loaded, draw stave + note; otherwise fallback to note‐name text
       if (typeof Vex !== "undefined" && typeof Vex.Flow !== "undefined") {
         // Clear the notationDiv
         notationDiv.innerHTML = "";
@@ -374,31 +371,54 @@
         vfStave = new Vex.Flow.Stave(10, 20, containerWidth - 20);
         vfStave.addClef("treble").setContext(vfContext).draw();
 
-        // Place the note
+        // If we have a target, draw it as a quarter note
         if (targetMidi !== null) {
           const noteSpec = {
             keys: [midiToVexNoteString(targetMidi)],
             duration: "q"
           };
-          targetVFNote = new Vex.Flow.StaveNote(noteSpec).addModifier(
+          const staveNote = new Vex.Flow.StaveNote(noteSpec).addModifier(
             new Vex.Flow.Articulation("a.").setPosition(3),
             0
           );
-          targetVFNote.setContext(vfContext).draw();
+          // Create a voice with a single quarter‐note in 4/4
+          const voice = new Vex.Flow.Voice({
+            num_beats: 1,
+            beat_value: 4,
+            resolution: Vex.Flow.RESOLUTION
+          });
+          voice.addTickable(staveNote);
+
+          // Format & justify the notes to the stave width
+          new Vex.Flow.Formatter()
+            .joinVoices([voice])
+            .format([voice], containerWidth - 40);
+
+          // Draw the note
+          voice.draw(vfContext, vfStave);
+          console.log("✅ VexFlow: drew note on stave");
         }
       } else {
-        // Fallback: simply show the note name in large text
+        // Fallback: display the note name in large text centered
         notationDiv.innerHTML = "";
         const fallback = document.createElement("div");
         fallback.className = "fallback-note";
         if (targetMidi !== null) {
-          // Find the note’s name
           const noteObj = allNotes.find(n => n.midi === targetMidi);
           fallback.textContent = noteObj ? noteObj.name : "--";
         } else {
           fallback.textContent = "--";
         }
+        // Position it exactly centered
+        fallback.style.position = "absolute";
+        fallback.style.top = "50%";
+        fallback.style.left = "50%";
+        fallback.style.transform = "translate(-50%, -50%)";
+        fallback.style.fontSize = "48px";
+        fallback.style.fontWeight = "bold";
+        fallback.style.color = "#333";
         notationDiv.appendChild(fallback);
+        console.log("ℹ️ Fallback: showing note name text");
       }
     }
 
@@ -415,8 +435,8 @@
       const midiList = levels[currentLevelIndex].midiList;
       const randIndex = Math.floor(Math.random() * midiList.length);
       targetMidi = midiList[randIndex];
+      console.log(`🎯 New target chosen: MIDI ${targetMidi}`);
       initVisualForTarget();
-      console.log("🎯 New target is MIDI", targetMidi);
     }
 
     // -----------------------------------
@@ -430,14 +450,20 @@
         rms += val * val;
       }
       rms = Math.sqrt(rms / SIZE);
-      if (rms < 0.01) return -1;
+      if (rms < 0.01) return -1;  // Too quiet
 
       let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
       for (let i = 0; i < SIZE / 2; i++) {
-        if (Math.abs(buffer[i]) < threshold) { r1 = i; break; }
+        if (Math.abs(buffer[i]) < threshold) {
+          r1 = i;
+          break;
+        }
       }
       for (let i = 1; i < SIZE / 2; i++) {
-        if (Math.abs(buffer[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
+        if (Math.abs(buffer[SIZE - i]) < threshold) {
+          r2 = SIZE - i;
+          break;
+        }
       }
 
       const trimmed = buffer.slice(r1, r2);
@@ -484,8 +510,9 @@
         .then(stream => {
           mediaStreamSource = audioContext.createMediaStreamSource(stream);
           mediaStreamSource.connect(analyserNode);
-          console.log("🎤 Microphone access granted, starting pitch detection");
+          console.log("🎤 Microphone access granted → pitch loop starting");
           listeningLabel.style.visibility = "visible";
+          micIndicator.style.visibility = "visible";
 
           const bufferLen = 2048;
           const buffer = new Float32Array(bufferLen);
@@ -607,7 +634,7 @@
       resultsModal.classList.remove("show");
       isGameRunning = true;
 
-      // Create or resume AudioContext inside this user gesture
+      // Create or resume AudioContext inside this click handler
       try {
         if (!audioContext) {
           audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -633,7 +660,7 @@
       levels = buildLevels(48 + octaveShift * 12);
       console.log("🔢 Built levels; starting at", levels[currentLevelIndex].name);
 
-      // Draw the first target (either VexFlow or fallback text)
+      // Draw the first target (VexFlow or fallback)
       pickNewTarget();
 
       // Request microphone if we don't already have it
@@ -643,6 +670,7 @@
       } else {
         console.log("🎤 Already have mediaStreamSource; skipping getUserMedia.");
         listeningLabel.style.visibility = "visible";
+        micIndicator.style.visibility = "visible";
       }
 
       // Start countdown timer
@@ -660,6 +688,7 @@
       isGameRunning = false;
       clearInterval(timerInterval);
       listeningLabel.style.visibility = "hidden";
+      micIndicator.style.visibility = "hidden";
       finalScoreP.textContent = `You scored ${totalHits} note${totalHits === 1 ? "" : "s"}.`;
       const hitsLastMin = lastHitTimestamps.length;
       const avgRate = ((hitsLastMin / 60) * 60).toFixed(1);
@@ -676,9 +705,9 @@
     startButton.addEventListener("click", startGame);
     playAgainButton.addEventListener("click", startGame);
 
-    // On page load, we do not draw anything until the user clicks
+    // On page load, just log a message and wait for the user to click
     window.addEventListener("load", () => {
-      console.log("🏁 Page loaded. Waiting for “Start Game.”");
+      console.log("🏁 Page loaded. Awaiting “Start Game.”");
     });
   </script>
 </body>
