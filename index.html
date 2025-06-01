@@ -4,8 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Hum the Note Game</title>
-  <!-- VexFlow (for notation rendering) -->
-  <script src="https://unpkg.com/vexflow/releases/vexflow-min.js"></script>
+
+  <!-- 1) Use JSDelivr for VexFlow (more reliable/mirrored) -->
+  <script src="https://cdn.jsdelivr.net/npm/vexflow/releases/vexflow-min.js"></script>
+
   <style>
     /* --- Basic Reset & Layout --- */
     * {
@@ -213,14 +215,14 @@
     // --- CONFIG & UTILS  ---
     // -----------------------
 
-    // A4 reference for frequency mapping
+    // Reference A4 for pitch–frequency mapping
     const A4_MIDI = 69;
     const A4_FREQ = 440.0;
     function midiToFreq(m) {
       return A4_FREQ * Math.pow(2, (m - A4_MIDI) / 12);
     }
 
-    // Precompute note names and frequencies from MIDI 36 (C2) to MIDI 84 (C6)
+    // Precompute note names + frequencies from MIDI 36 (C2) → MIDI 84 (C6)
     const NOTE_NAMES = [
       'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'
     ];
@@ -231,12 +233,12 @@
       allNotes.push({ midi: m, name: name, freq: midiToFreq(m) });
     }
 
-    // Given a frequency, find the closest note (by smallest cents‐distance)
+    // Given a frequency, find the closest note (smallest cents distance)
     function findClosestNoteObj(freq) {
       let best = null;
       let bestDist = Infinity;
       for (let note of allNotes) {
-        let cents = Math.abs(1200 * Math.log2(freq / note.freq));
+        const cents = Math.abs(1200 * Math.log2(freq / note.freq));
         if (cents < bestDist) {
           bestDist = cents;
           best = note;
@@ -245,37 +247,37 @@
       return { note: best, centsOff: bestDist };
     }
 
-    // Check if `freq` belongs in the same semitone‐“bin” as targetMidi
+    // Return true if freq falls in the same semitone‐“bin” as targetMidi
     function isInTargetBin(freq, targetMidi) {
       const candidate = findClosestNoteObj(freq).note;
       return candidate.midi === targetMidi;
     }
 
-    // Check if an array of frequencies is stable (max excursion < threshold cents)
+    // Check if an array of pitches is stable (max excursion < threshold cents)
     function isStableFreq(freqArray, thresholdCents = 50) {
       if (freqArray.length < 2) return false;
-      let minFreq = Math.min(...freqArray);
-      let maxFreq = Math.max(...freqArray);
-      let centsDiff = Math.abs(1200 * Math.log2(maxFreq / minFreq));
+      const minFreq = Math.min(...freqArray);
+      const maxFreq = Math.max(...freqArray);
+      const centsDiff = Math.abs(1200 * Math.log2(maxFreq / minFreq));
       return centsDiff <= thresholdCents;
     }
 
-    // Convert a MIDI number to VexFlow note string (e.g. "c/4")
+    // Convert a MIDI number to a VexFlow‐style note string (e.g. "c/4")
     function midiToVexNoteString(midi) {
       const octave = Math.floor(midi / 12) - 1;
-      const noteName = NOTE_NAMES[midi % 12].toLowerCase().replace('#', '#');
-      return noteName + "/" + octave;
+      const base = NOTE_NAMES[midi % 12].toLowerCase().replace('#', '#');
+      return base + "/" + octave;
     }
 
     // ---------------------------------------------------------------
-    // --- BUILD LEVELS: 4 SEMITONES STARTING AT `baseRootMidi`    ---
+    // --- BUILD LEVELS: START WITH EXACTLY 4 SEMITONES, THEN ±2   ---
     // ---------------------------------------------------------------
-    function buildLevels(baseRootMidi = 48 /* C3 */, maxLevels = 10) {
-      let levels = [];
-      // Level 1: from baseRootMidi up to baseRootMidi + 4 (4 semitones)
+    function buildLevels(baseRootMidi = 48 /*C3*/, maxLevels = 10) {
+      const levels = [];
+      // Level 1 = baseRootMidi → baseRootMidi + 4 (inclusive)
       const initialLow = baseRootMidi;
-      const initialHigh = Math.min(baseRootMidi + 4, 84);
-      let lvl1List = [];
+      const initialHigh = Math.min(baseRootMidi + 4, 84); // clamp to MIDI 84
+      const lvl1List = [];
       for (let m = initialLow; m <= initialHigh; m++) {
         lvl1List.push(m);
       }
@@ -284,18 +286,18 @@
         midiList: lvl1List
       });
 
-      // Each next level extends ±2 semitones
+      // Each subsequent level expands ±2 semitones
       let low = initialLow;
       let high = initialHigh;
       for (let lvl = 2; lvl <= maxLevels; lvl++) {
         low = Math.max(36, low - 2);
         high = Math.min(84, high + 2);
-        let arr = [];
+        const arr = [];
         for (let m = low; m <= high; m++) {
           arr.push(m);
         }
         levels.push({
-          name: `Level ${lvl} (±${2 * (lvl - 1)} semitones: ${NOTE_NAMES[low % 12]}${Math.floor(low/12)-1} → ${NOTE_NAMES[high % 12]}${Math.floor(high/12)-1})`,
+          name: `Level ${lvl} (±${2*(lvl-1)} semitones: ${NOTE_NAMES[low % 12]}${Math.floor(low/12)-1} → ${NOTE_NAMES[high % 12]}${Math.floor(high/12)-1})`,
           midiList: arr
         });
       }
@@ -305,7 +307,6 @@
     // ---------------------------
     // --- GLOBAL GAME STATE  ---
     // ---------------------------
-
     let audioContext = null;
     let mediaStreamSource = null;
     let analyserNode = null;
@@ -321,12 +322,12 @@
     let timeRemaining = 0;
     let timerInterval = null;
 
-    // For stability: buffer of recent freq samples during a single “attempt”
+    // For stability: buffer of pitch samples during a single "attempt"
     let freqBuffer = [];
     let isAttemptActive = false;
     let attemptStartTime = null;
 
-    // VexFlow renderer objects (initialized once per “Start”)
+    // VexFlow renderer (initialized only when we actually start)
     let vfRenderer = null, vfContext = null, vfStave = null;
 
     // HTML Elements
@@ -345,33 +346,56 @@
     const playAgainButton = document.getElementById("play-again-button");
 
     // ---------------------------------------------------
+    // --- DYNAMICALLY LOAD VEXFLOW IF STILL UNDEFINED ---
+    // ---------------------------------------------------
+    function ensureVexFlowLoaded(callback) {
+      if (typeof Vex !== "undefined" && typeof Vex.Flow !== "undefined") {
+        // Already there
+        return callback();
+      }
+      console.warn("⚠️ VexFlow is not defined; injecting fallback script from JSDelivr...");
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/vexflow/releases/vexflow-min.js";
+      script.onload = () => {
+        console.log("✅ VexFlow fallback loaded via JSDelivr.");
+        callback();
+      };
+      script.onerror = () => {
+        console.error("🔴 Failed to load VexFlow from fallback URL.");
+        alert("ERROR: Could not load VexFlow library.");
+      };
+      document.head.appendChild(script);
+    }
+
+    // ---------------------------------------------------
     // --- INITIALIZE VEXFLOW & DRAW FIRST TARGET NOTE ---
     // ---------------------------------------------------
     function initVexFlowAndFirstNote() {
-      try {
-        if (typeof Vex === "undefined" || typeof Vex.Flow === "undefined") {
-          throw new Error("VexFlow library is not loaded.");
+      ensureVexFlowLoaded(() => {
+        try {
+          if (typeof Vex === "undefined" || typeof Vex.Flow === "undefined") {
+            throw new Error("VexFlow library is not loaded.");
+          }
+          // Clear any existing content
+          notationDiv.innerHTML = "";
+
+          // Get the container's width so it scales on mobile
+          const containerWidth = notationDiv.clientWidth || 480;
+          vfRenderer = new Vex.Flow.Renderer(notationDiv, Vex.Flow.Renderer.Backends.SVG);
+          vfRenderer.resize(containerWidth, 140);
+          vfContext = vfRenderer.getContext();
+
+          // Draw a single stave (treble clef)
+          vfStave = new Vex.Flow.Stave(10, 10, containerWidth - 20);
+          vfStave.addClef("treble").addTimeSignature("");
+          vfStave.setContext(vfContext).draw();
+
+          console.log("✅ VexFlow initialized successfully");
+        } catch (err) {
+          console.error("🔴 VexFlow init failed:", err);
+          alert("ERROR: Could not initialize musical stave:\n" + err.message);
         }
-
-        // Remove any existing SVG so we can redraw cleanly
-        notationDiv.innerHTML = "";
-
-        // Use the container’s width (responsive) rather than a fixed 480px
-        const containerWidth = notationDiv.clientWidth || 480;
-        vfRenderer = new Vex.Flow.Renderer(notationDiv, Vex.Flow.Renderer.Backends.SVG);
-        vfRenderer.resize(containerWidth, 140);
-        vfContext = vfRenderer.getContext();
-
-        // Draw a single stave (treble clef by default)
-        vfStave = new Vex.Flow.Stave(10, 10, containerWidth - 20);
-        vfStave.addClef("treble").addTimeSignature("");
-        vfStave.setContext(vfContext).draw();
-
-        console.log("✅ VexFlow initialized successfully");
-      } catch (err) {
-        console.error("🔴 VexFlow init failed:", err);
-        alert("ERROR: Could not initialize musical stave:\n" + err.message);
-      }
+      });
     }
 
     function clearVexNotes() {
@@ -411,7 +435,7 @@
       let SIZE = buffer.length;
       let rms = 0;
       for (let i = 0; i < SIZE; i++) {
-        let val = buffer[i];
+        const val = buffer[i];
         rms += val * val;
       }
       rms = Math.sqrt(rms / SIZE);
@@ -431,12 +455,12 @@
         }
       }
 
-      buffer = buffer.slice(r1, r2);
-      SIZE = buffer.length;
-      let c = new Array(SIZE).fill(0);
+      const trimmed = buffer.slice(r1, r2);
+      SIZE = trimmed.length;
+      const c = new Array(SIZE).fill(0);
       for (let i = 0; i < SIZE; i++) {
         for (let j = 0; j < SIZE - i; j++) {
-          c[i] += buffer[j] * buffer[j + i];
+          c[i] += trimmed[j] * trimmed[j + i];
         }
       }
       let d = 0;
@@ -449,11 +473,11 @@
         }
       }
       let T0 = maxpos;
-      let x1 = c[T0 - 1];
-      let x2 = c[T0];
-      let x3 = c[T0 + 1];
-      let a = (x1 + x3 - 2 * x2) / 2;
-      let b = (x3 - x1) / 2;
+      const x1 = c[T0 - 1];
+      const x2 = c[T0];
+      const x3 = c[T0 + 1];
+      const a = (x1 + x3 - 2 * x2) / 2;
+      const b = (x3 - x1) / 2;
       if (a) T0 = T0 - b / (2 * a);
       return sampleRate / T0;
     }
@@ -510,7 +534,7 @@
     function handleDetectedPitch(freq) {
       const targetFreq = midiToFreq(targetMidi);
       const centsDiff = 1200 * Math.log2(freq / targetFreq);
-      let closeness = Math.max(0, 1 - Math.abs(centsDiff) / 200);
+      const closeness = Math.max(0, 1 - Math.abs(centsDiff) / 200);
       pitchMeterFill.style.width = `${closeness * 100}%`;
 
       const now = performance.now();
@@ -600,7 +624,7 @@
       resultsModal.classList.remove("show");
       isGameRunning = true;
 
-      // Create or resume AudioContext inside this user gesture
+      // Create or resume AudioContext inside the click handler
       try {
         if (!audioContext) {
           audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -667,8 +691,13 @@
     // -----------------------
     // --- EVENT BINDINGS  ---
     // -----------------------
-    startButton.addEventListener("click", () => startGame());
-    playAgainButton.addEventListener("click", () => startGame());
+    startButton.addEventListener("click", startGame);
+    playAgainButton.addEventListener("click", startGame);
+
+    // On page load, just log a message but do not initialize VexFlow yet
+    window.addEventListener("load", () => {
+      console.log("🏁 Page loaded. Waiting for “Start Game” to initialize VexFlow.");
+    });
   </script>
 </body>
 </html>
