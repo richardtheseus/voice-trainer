@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Humming Note Identifier (Debug)</title>
+  <title>Humming Note Identifier (Noise‐Reduced)</title>
   <style>
     body {
       display: flex;
@@ -55,7 +55,7 @@
   </style>
 </head>
 <body>
-  <h1>Humming Note Identifier (Debug)</h1>
+  <h1>Humming Note Identifier (Noise‐Reduced)</h1>
   <button id="toggle-button">Start Listening</button>
   <div id="output">
     <div id="note-name">—</div>
@@ -64,21 +64,17 @@
   <div id="error-msg"></div>
 
   <script>
-    // Precompute notes from MIDI 36 (C2) to 84 (C6)
-    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const A4_MIDI = 69;
-    const A4_FREQ = 440.0;
+    // ====== UTILS & DATA ======
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const A4_MIDI = 69, A4_FREQ = 440.0;
     const allNotes = [];
     for (let m = 36; m <= 84; m++) {
-      const freq = A4_FREQ * Math.pow(2, (m - A4_MIDI) / 12);
-      const octave = Math.floor(m / 12) - 1;
-      const name = NOTE_NAMES[m % 12] + octave;
-      allNotes.push({ midi: m, name: name, freq: freq });
+      const freq = A4_FREQ * Math.pow(2, (m - A4_MIDI)/12);
+      const octave = Math.floor(m/12) - 1;
+      allNotes.push({ midi: m, name: NOTE_NAMES[m % 12] + octave, freq });
     }
-
     function findClosestNote(freq) {
-      let best = null;
-      let bestDist = Infinity;
+      let best = null, bestDist = Infinity;
       for (let note of allNotes) {
         const cents = Math.abs(1200 * Math.log2(freq / note.freq));
         if (cents < bestDist) {
@@ -88,28 +84,19 @@
       }
       return best;
     }
-
     function autoCorrelate(buffer, sampleRate) {
       let SIZE = buffer.length;
       let rms = 0;
-      for (let i = 0; i < SIZE; i++) {
-        rms += buffer[i] * buffer[i];
-      }
+      for (let i = 0; i < SIZE; i++) rms += buffer[i] * buffer[i];
       rms = Math.sqrt(rms / SIZE);
-      if (rms < 0.01) return -1;  // too quiet
+      if (rms < 0.02) return -1;  // Noise gate: ignore if < 0.02 RMS
 
-      let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
-      for (let i = 0; i < SIZE / 2; i++) {
-        if (Math.abs(buffer[i]) < threshold) {
-          r1 = i;
-          break;
-        }
+      let r1 = 0, r2 = SIZE-1, threshold = 0.2;
+      for (let i = 0; i < SIZE/2; i++) {
+        if (Math.abs(buffer[i]) < threshold) { r1 = i; break; }
       }
-      for (let i = 1; i < SIZE / 2; i++) {
-        if (Math.abs(buffer[SIZE - i]) < threshold) {
-          r2 = SIZE - i;
-          break;
-        }
+      for (let i = 1; i < SIZE/2; i++) {
+        if (Math.abs(buffer[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
       }
       const trimmed = buffer.slice(r1, r2);
       SIZE = trimmed.length;
@@ -120,7 +107,7 @@
         }
       }
       let d = 0;
-      while (c[d] > c[d + 1]) d++;
+      while (c[d] > c[d+1]) d++;
       let maxval = -1, maxpos = -1;
       for (let i = d; i < SIZE; i++) {
         if (c[i] > maxval) {
@@ -129,77 +116,77 @@
         }
       }
       let T0 = maxpos;
-      const x1 = c[T0 - 1], x2 = c[T0], x3 = c[T0 + 1];
-      const a = (x1 + x3 - 2 * x2) / 2;
-      const b = (x3 - x1) / 2;
-      if (a) T0 = T0 - b / (2 * a);
+      const x1 = c[T0-1], x2 = c[T0], x3 = c[T0+1];
+      const a = (x1 + x3 - 2*x2)/2;
+      const b = (x3 - x1)/2;
+      if (a) T0 = T0 - b/(2*a);
       return sampleRate / T0;
     }
 
-    let audioContext = null;
-    let analyserNode = null;
-    let mediaStreamSource = null;
+    // ====== STATE & ELEMENTS ======
+    let audioContext = null, analyserNode = null, mediaStreamSource = null;
     let listening = false;
+    let stabilityBuffer = [];
     const toggleBtn = document.getElementById('toggle-button');
     const noteNameDiv = document.getElementById('note-name');
     const freqDiv = document.getElementById('frequency');
     const errorMsgDiv = document.getElementById('error-msg');
 
-    // First: check microphone permission via Permissions API (if available)
-    async function checkMicrophonePermission() {
-      if (!navigator.permissions) {
-        // Permissions API not supported → skip check
-        return 'prompt';
-      }
+    async function checkMicPermission() {
+      if (!navigator.permissions) return 'prompt';
       try {
         const status = await navigator.permissions.query({ name: 'microphone' });
-        return status.state; // 'granted', 'denied', or 'prompt'
-      } catch (e) {
-        console.warn('Permissions API error:', e);
+        return status.state;
+      } catch {
         return 'prompt';
       }
     }
 
     async function startListening() {
       errorMsgDiv.textContent = '';
-      const perm = await checkMicrophonePermission();
+      const perm = await checkMicPermission();
       if (perm === 'denied') {
-        errorMsgDiv.textContent = '⚠️ Microphone permission is already denied. Please enable microphone access in your browser settings.';
+        errorMsgDiv.textContent = '⚠️ Microphone permission is denied. Enable it in browser settings.';
         return;
       }
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert('🔴 getUserMedia is not supported by your browser');
+      if (!navigator.mediaDevices?.getUserMedia) {
+        alert('🔴 getUserMedia not supported');
         return;
       }
-
       try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
       } catch (e) {
-        console.error('AudioContext creation failed:', e);
-        alert('ERROR: Could not create AudioContext. Your browser may be blocking audio.');
+        console.error('AudioContext error:', e);
+        alert('🔴 Cannot create AudioContext');
         return;
       }
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaStreamSource = audioContext.createMediaStreamSource(stream);
+
+        // Insert a high‐pass filter at 80 Hz to cut low rumble
+        const filter = audioContext.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 80;
+        mediaStreamSource.connect(filter);
+
         analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 2048;
-        analyserNode.smoothingTimeConstant = 0.8;
-        mediaStreamSource.connect(analyserNode);
+        analyserNode.smoothingTimeConstant = 0.85;
+        filter.connect(analyserNode);
 
         listening = true;
         toggleBtn.textContent = 'Stop Listening';
         toggleBtn.classList.add('listening');
         noteNameDiv.textContent = '…';
         freqDiv.textContent = '…';
-        errorMsgDiv.textContent = '';
 
         listenLoop();
       } catch (err) {
         console.error('getUserMedia error:', err);
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          alert('🔴 Microphone access denied. Please allow microphone access in your browser settings.');
+        if (err.name === 'NotAllowedError') {
+          alert('🔴 Microphone access denied');
         } else {
           alert('🔴 getUserMedia error: ' + err.message);
         }
@@ -208,12 +195,10 @@
 
     function stopListening() {
       listening = false;
-      if (mediaStreamSource && mediaStreamSource.mediaStream) {
+      if (mediaStreamSource?.mediaStream) {
         mediaStreamSource.mediaStream.getTracks().forEach(t => t.stop());
       }
-      if (audioContext) {
-        audioContext.close();
-      }
+      audioContext?.close();
       audioContext = null;
       analyserNode = null;
       mediaStreamSource = null;
@@ -230,17 +215,37 @@
       function update() {
         if (!listening) return;
         analyserNode.getFloatTimeDomainData(buffer);
-        const pitch = autoCorrelate(buffer, audioContext.sampleRate);
-        if (pitch !== -1) {
-          const closest = findClosestNote(pitch);
-          if (closest) {
-            noteNameDiv.textContent = closest.name;
-            freqDiv.textContent = pitch.toFixed(2) + ' Hz';
-          } else {
-            noteNameDiv.textContent = '—';
-            freqDiv.textContent = pitch.toFixed(2) + ' Hz';
+
+        // Run pitch detection only if RMS > 0.02 (noise gate)
+        let rms = 0;
+        for (let i = 0; i < buffer.length; i++) rms += buffer[i] * buffer[i];
+        rms = Math.sqrt(rms / buffer.length);
+        if (rms > 0.02) {
+          const pitch = autoCorrelate(buffer, audioContext.sampleRate);
+          if (pitch !== -1) {
+            stabilityBuffer.push(pitch);
+            const now = performance.now();
+            // Keep only last 100 ms values
+            stabilityBuffer = stabilityBuffer.filter(item => item.time > now - 100);
+            // If we have been stable (stddev < 20 cents) for ≥100 ms, update display
+            if (stabilityBuffer.length >= 3) {
+              const freqs = stabilityBuffer.map(item => item.value);
+              const avg = freqs.reduce((a,b) => a+b)/freqs.length;
+              const diffs = freqs.map(f => 1200 * Math.log2(f/avg));
+              const stddev = Math.sqrt(diffs.reduce((s,d) => s + d*d, 0)/diffs.length);
+              if (stddev < 20) {
+                const closest = findClosestNote(avg);
+                if (closest) {
+                  noteNameDiv.textContent = closest.name;
+                  freqDiv.textContent = avg.toFixed(2) + ' Hz';
+                }
+              }
+            } else {
+              stabilityBuffer.push({ value: pitch, time: now });
+            }
           }
         }
+
         requestAnimationFrame(update);
       }
       requestAnimationFrame(update);
@@ -248,6 +253,7 @@
 
     toggleBtn.addEventListener('click', () => {
       if (!listening) {
+        stabilityBuffer = [];
         startListening();
       } else {
         stopListening();
