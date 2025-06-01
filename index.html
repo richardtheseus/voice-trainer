@@ -28,6 +28,7 @@
     }
     /* --- Container for notation and feedback --- */
     #game-container {
+      position: relative;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -42,6 +43,15 @@
       width: 100%;
       height: 140px;
       margin-bottom: 20px;
+      border: 1px solid #aaa; /* Temporary border for debugging */
+      background: #fff;
+    }
+    /* --- “Listening...” indicator --- */
+    #listening-label {
+      font-size: 0.9rem;
+      color: #27ae60;
+      margin-bottom: 10px;
+      visibility: hidden;
     }
     /* --- Pitch meter (visual feedback) --- */
     #pitch-meter {
@@ -152,6 +162,8 @@
   <div id="game-container">
     <!-- Notation Canvas -->
     <div id="notation"></div>
+    <!-- Listening Indicator -->
+    <div id="listening-label">Listening...</div>
     <!-- Pitch Meter -->
     <div id="pitch-meter">
       <div id="pitch-meter-fill"></div>
@@ -174,7 +186,7 @@
           <option value="120">120 s</option>
         </select>
       </div>
-      <!-- Octave Shift -->
+      <!-- Starting C Selector -->
       <div class="control-group">
         <label for="octave-select">Starting C:</label>
         <select id="octave-select">
@@ -201,7 +213,7 @@
     // --- CONFIG & UTILS  ---
     // -----------------------
 
-    // Note frequencies (A4 = 440 Hz). We'll generate a map from MIDI note numbers (e.g., 60 = C4) to freq.
+    // Note frequencies (A4 = 440 Hz).
     const A4_MIDI = 69;
     const A4_FREQ = 440.0;
     function midiToFreq(m) {
@@ -212,7 +224,7 @@
     const NOTE_NAMES = [
       'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'
     ];
-    let allNotes = []; // { midi: int, name: string, freq: number }
+    let allNotes = [];
     for (let m = 36; m <= 84; m++) {
       const octave = Math.floor(m / 12) - 1;
       const name = NOTE_NAMES[m % 12] + octave;
@@ -224,7 +236,6 @@
       let best = null;
       let bestDist = Infinity;
       for (let note of allNotes) {
-        // distance in cents = 1200 * log2(freq / note.freq)
         let cents = Math.abs(1200 * Math.log2(freq / note.freq));
         if (cents < bestDist) {
           bestDist = cents;
@@ -251,19 +262,19 @@
 
     // Convert a VexFlow‐friendly note (e.g., "c/4") from a MIDI number:
     function midiToVexNoteString(midi) {
-      const octave = Math.floor(midi / 12) - 1; // MIDI 60 → octave = 4
+      const octave = Math.floor(midi / 12) - 1;
       const nameNoOct = NOTE_NAMES[midi % 12].toLowerCase().replace('#', '#');
       return nameNoOct + "/" + octave;
     }
 
-    // ----------------------------------------------------
-    // --- BUILD LEVELS: 4-SEMITONE START, THEN ±2-SEMITONE  ---
-    // ----------------------------------------------------
-    function buildLevels(baseRootMidi = 48 /* C3 = 48 */, maxLevels = 10) {
+    // --------------------------------------------------------------
+    // --- BUILD LEVELS: 4-SEMITONE START, THEN ±2-SEMITONE EACH  ---
+    // --------------------------------------------------------------
+    function buildLevels(baseRootMidi = 48 /* C3 */, maxLevels = 10) {
       let levels = [];
-      // Level 1: 4-semitone span from baseRootMidi to baseRootMidi + 4 (inclusive)
+      // Level 1: 4-semitone span from baseRootMidi to baseRootMidi + 4
       const initialLow = baseRootMidi;
-      const initialHigh = Math.min(baseRootMidi + 4, 84); // clamp to MIDI 84 max
+      const initialHigh = Math.min(baseRootMidi + 4, 84);
       let lvl1List = [];
       for (let m = initialLow; m <= initialHigh; m++) {
         lvl1List.push(m);
@@ -300,20 +311,19 @@
     let analyserNode = null;
 
     let isGameRunning = false;
-    let currentLevelIndex = 0;    // index into levels[]
-    let levels = [];              // filled in on init
-    let octaveShift = 0;          // -1, 0, +1  → baseRootMidi = 48 + (octaveShift * 12)
-    let targetMidi = null;        // MIDI number of current target note
-    let targetVFNote = null;      // VexFlow voice/stave note
-    let lastHitTimestamps = [];   // for rolling hits/min calculation
+    let currentLevelIndex = 0;
+    let levels = [];
+    let octaveShift = 0;          // -1, 0, +1
+    let targetMidi = null;
+    let targetVFNote = null;
+    let lastHitTimestamps = [];
     let totalHits = 0;
-    let gameDuration = 60;        // seconds (user‐selectable)
-    let timeRemaining = 0;        // seconds
+    let timeRemaining = 0;
     let timerInterval = null;
 
     // For stability: buffer of recent freq samples during a single “attempt”
     let freqBuffer = [];
-    let isAttemptActive = false;   // mark when user starts humming
+    let isAttemptActive = false;
     let attemptStartTime = null;
 
     // VexFlow renderer objects
@@ -321,6 +331,7 @@
 
     // HTML Elements
     const notationDiv = document.getElementById("notation");
+    const listeningLabel = document.getElementById("listening-label");
     const pitchMeterFill = document.getElementById("pitch-meter-fill");
     const scoreDisplay = document.getElementById("score-display");
     const timerDisplay = document.getElementById("timer-display");
@@ -338,7 +349,6 @@
     // -----------------------------
 
     function initGame() {
-      // Build levels based on chosen C (octaveShift)
       levels = buildLevels(48 + octaveShift * 12);
 
       // Initialize VexFlow
@@ -377,6 +387,7 @@
       targetVFNote = new Vex.Flow.StaveNote(vfNoteSpec)
         .addModifier(new Vex.Flow.Articulation("a.").setPosition(3), 0);
       drawTargetNote();
+      console.log("🎯 New target drawn (MIDI " + targetMidi + ")");
     }
 
     // -----------------------------------
@@ -384,7 +395,6 @@
     // -----------------------------------
 
     function autoCorrelate(buffer, sampleRate) {
-      // Adapted from Chris Wilson’s example
       let SIZE = buffer.length;
       let rms = 0;
       for (let i = 0; i < SIZE; i++) {
@@ -437,35 +447,44 @@
 
     function startPitchDetection() {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert("getUserMedia is not supported by your browser");
+        alert("🔴 getUserMedia is not supported by your browser");
+        console.error("getUserMedia not supported");
         return;
       }
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
       analyserNode = audioContext.createAnalyser();
       analyserNode.fftSize = 2048;
       analyserNode.smoothingTimeConstant = 0.8;
 
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        mediaStreamSource = audioContext.createMediaStreamSource(stream);
-        mediaStreamSource.connect(analyserNode);
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          mediaStreamSource = audioContext.createMediaStreamSource(stream);
+          mediaStreamSource.connect(analyserNode);
+          console.log("🎤 Microphone access granted, starting pitch detection");
+          listeningLabel.style.visibility = "visible";
 
-        const bufferLen = 2048;
-        const buffer = new Float32Array(bufferLen);
+          const bufferLen = 2048;
+          const buffer = new Float32Array(bufferLen);
 
-        function updatePitch() {
-          if (!isGameRunning) return;
-          analyserNode.getFloatTimeDomainData(buffer);
-          const pitch = autoCorrelate(buffer, audioContext.sampleRate);
-          if (pitch !== -1) {
-            handleDetectedPitch(pitch);
+          function updatePitch() {
+            if (!isGameRunning) return;
+            analyserNode.getFloatTimeDomainData(buffer);
+            const pitch = autoCorrelate(buffer, audioContext.sampleRate);
+            if (pitch !== -1) {
+              handleDetectedPitch(pitch);
+            }
+            requestAnimationFrame(updatePitch);
           }
           requestAnimationFrame(updatePitch);
-        }
-        updatePitch();
-      }).catch(err => {
-        console.error("Error accessing mic:", err);
-        alert("Microphone access was denied.");
-      });
+        })
+        .catch(err => {
+          console.error("🔴 Error accessing mic:", err);
+          alert("🔴 Microphone access was denied or not available:\n" + err.message);
+          // Re-enable UI so user can try again
+          isGameRunning = false;
+          startButton.disabled = false;
+          timeSelect.disabled = false;
+          octaveSelect.disabled = false;
+        });
     }
 
     // ----------------------------------------
@@ -517,15 +536,18 @@
       scoreDisplay.textContent = `Score: ${totalHits}`;
       flashFeedback("green");
       lastHitTimestamps.push(Date.now());
+
+      // Prune timestamps older than 60s
       const cutoff = Date.now() - 60000;
       lastHitTimestamps = lastHitTimestamps.filter(ts => ts >= cutoff);
 
       const hitsLastMin = lastHitTimestamps.length;
-      // hits per minute = hitsLastMin
       if (hitsLastMin > 5 && currentLevelIndex < levels.length - 1) {
         currentLevelIndex++;
+        console.log("⬆️ Level up to", levels[currentLevelIndex].name);
       } else if (hitsLastMin < 3 && currentLevelIndex > 0) {
         currentLevelIndex--;
+        console.log("⬇️ Level down to", levels[currentLevelIndex].name);
       }
 
       pickNewTarget();
@@ -549,6 +571,10 @@
     // ------------------------
 
     function startGame() {
+      alert("DEBUG: startGame() was invoked");
+      console.log("▶️ startGame() called");
+
+      // Reset state
       totalHits = 0;
       scoreDisplay.textContent = "Score: 0";
       lastHitTimestamps = [];
@@ -561,13 +587,45 @@
       resultsModal.classList.remove("show");
       isGameRunning = true;
 
+      // Create or resume AudioContext inside this user gesture
+      try {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          console.log("🎛️ AudioContext created:", audioContext);
+          audioContext.resume().then(() => {
+            console.log("🔊 AudioContext resumed");
+          }).catch(err => {
+            console.error("🔴 AudioContext resume failed:", err);
+          });
+        }
+      } catch (err) {
+        console.error("🔴 Could not create AudioContext:", err);
+        alert("ERROR: Could not create AudioContext. Your browser may be blocking audio.");
+        isGameRunning = false;
+        startButton.disabled = false;
+        timeSelect.disabled = false;
+        octaveSelect.disabled = false;
+        return;
+      }
+
+      // Build levels based on chosen C (octaveShift)
       octaveShift = parseInt(octaveSelect.value);
       levels = buildLevels(48 + octaveShift * 12);
+      console.log("🔢 Built levels; starting at", levels[currentLevelIndex].name);
 
+      // Pick the first target and draw it immediately
       pickNewTarget();
-      if (!audioContext) {
+
+      // Request microphone if we don't already have it
+      if (!mediaStreamSource) {
+        console.log("🎤 Attempting getUserMedia for mic...");
         startPitchDetection();
+      } else {
+        console.log("🎤 Already have mediaStreamSource; skipping getUserMedia.");
+        listeningLabel.style.visibility = "visible";
       }
+
+      // Start countdown timer
       timerInterval = setInterval(() => {
         timeRemaining--;
         if (timeRemaining <= 0) {
@@ -581,6 +639,7 @@
     function endGame() {
       isGameRunning = false;
       clearInterval(timerInterval);
+      listeningLabel.style.visibility = "hidden";
       finalScoreP.textContent = `You scored ${totalHits} note${totalHits === 1 ? "" : "s"}.`;
       const hitsLastMin = lastHitTimestamps.length;
       const avgRate = ((hitsLastMin / 60) * 60).toFixed(1);
@@ -601,6 +660,7 @@
     // Initialize on load
     window.addEventListener("load", () => {
       initGame();
+      console.log("🏁 Game initialized (awaiting user to Start)");
     });
   </script>
 </body>
