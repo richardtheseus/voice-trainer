@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Humming Note Identifier</title>
+  <title>Humming Note Identifier (Debug)</title>
   <style>
     body {
       display: flex;
@@ -15,6 +15,7 @@
     }
     h1 {
       margin-bottom: 20px;
+      text-align: center;
     }
     #toggle-button {
       padding: 10px 20px;
@@ -45,15 +46,22 @@
     #frequency {
       color: #555;
     }
+    #error-msg {
+      margin-top: 15px;
+      color: #c0392b;
+      font-size: 16px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
-  <h1>Humming Note Identifier</h1>
+  <h1>Humming Note Identifier (Debug)</h1>
   <button id="toggle-button">Start Listening</button>
   <div id="output">
     <div id="note-name">—</div>
     <div id="frequency">—</div>
   </div>
+  <div id="error-msg"></div>
 
   <script>
     // Precompute notes from MIDI 36 (C2) to 84 (C6)
@@ -88,7 +96,7 @@
         rms += buffer[i] * buffer[i];
       }
       rms = Math.sqrt(rms / SIZE);
-      if (rms < 0.01) return -1;
+      if (rms < 0.01) return -1;  // too quiet
 
       let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
       for (let i = 0; i < SIZE / 2; i++) {
@@ -135,39 +143,77 @@
     const toggleBtn = document.getElementById('toggle-button');
     const noteNameDiv = document.getElementById('note-name');
     const freqDiv = document.getElementById('frequency');
+    const errorMsgDiv = document.getElementById('error-msg');
 
-    function startListening() {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert('getUserMedia not supported');
+    // First: check microphone permission via Permissions API (if available)
+    async function checkMicrophonePermission() {
+      if (!navigator.permissions) {
+        // Permissions API not supported → skip check
+        return 'prompt';
+      }
+      try {
+        const status = await navigator.permissions.query({ name: 'microphone' });
+        return status.state; // 'granted', 'denied', or 'prompt'
+      } catch (e) {
+        console.warn('Permissions API error:', e);
+        return 'prompt';
+      }
+    }
+
+    async function startListening() {
+      errorMsgDiv.textContent = '';
+      const perm = await checkMicrophonePermission();
+      if (perm === 'denied') {
+        errorMsgDiv.textContent = '⚠️ Microphone permission is already denied. Please enable microphone access in your browser settings.';
         return;
       }
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      analyserNode = audioContext.createAnalyser();
-      analyserNode.fftSize = 2048;
-      analyserNode.smoothingTimeConstant = 0.8;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('🔴 getUserMedia is not supported by your browser');
+        return;
+      }
 
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(stream => {
-          mediaStreamSource = audioContext.createMediaStreamSource(stream);
-          mediaStreamSource.connect(analyserNode);
-          listening = true;
-          toggleBtn.textContent = 'Stop Listening';
-          toggleBtn.classList.add('listening');
-          listenLoop();
-        })
-        .catch(err => {
-          console.error('Microphone access denied:', err);
-          alert('Microphone access denied');
-        });
+      try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        console.error('AudioContext creation failed:', e);
+        alert('ERROR: Could not create AudioContext. Your browser may be blocking audio.');
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamSource = audioContext.createMediaStreamSource(stream);
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 2048;
+        analyserNode.smoothingTimeConstant = 0.8;
+        mediaStreamSource.connect(analyserNode);
+
+        listening = true;
+        toggleBtn.textContent = 'Stop Listening';
+        toggleBtn.classList.add('listening');
+        noteNameDiv.textContent = '…';
+        freqDiv.textContent = '…';
+        errorMsgDiv.textContent = '';
+
+        listenLoop();
+      } catch (err) {
+        console.error('getUserMedia error:', err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          alert('🔴 Microphone access denied. Please allow microphone access in your browser settings.');
+        } else {
+          alert('🔴 getUserMedia error: ' + err.message);
+        }
+      }
     }
 
     function stopListening() {
       listening = false;
       if (mediaStreamSource && mediaStreamSource.mediaStream) {
-        const tracks = mediaStreamSource.mediaStream.getTracks();
-        tracks.forEach(t => t.stop());
+        mediaStreamSource.mediaStream.getTracks().forEach(t => t.stop());
       }
-      audioContext.close();
+      if (audioContext) {
+        audioContext.close();
+      }
       audioContext = null;
       analyserNode = null;
       mediaStreamSource = null;
@@ -178,15 +224,22 @@
     }
 
     function listenLoop() {
+      if (!listening || !analyserNode) return;
       const buffer = new Float32Array(analyserNode.fftSize);
+
       function update() {
         if (!listening) return;
         analyserNode.getFloatTimeDomainData(buffer);
         const pitch = autoCorrelate(buffer, audioContext.sampleRate);
         if (pitch !== -1) {
           const closest = findClosestNote(pitch);
-          noteNameDiv.textContent = closest.name;
-          freqDiv.textContent = pitch.toFixed(2) + ' Hz';
+          if (closest) {
+            noteNameDiv.textContent = closest.name;
+            freqDiv.textContent = pitch.toFixed(2) + ' Hz';
+          } else {
+            noteNameDiv.textContent = '—';
+            freqDiv.textContent = pitch.toFixed(2) + ' Hz';
+          }
         }
         requestAnimationFrame(update);
       }
