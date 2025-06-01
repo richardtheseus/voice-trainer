@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Humming Note Identifier (Noise‐Reduced)</title>
+  <title>Humming Note Identifier (Noise‐Reduced + Interval)</title>
   <style>
     body {
       display: flex;
@@ -38,6 +38,7 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.1);
       min-width: 300px;
       text-align: center;
+      margin-bottom: 10px;
     }
     #note-name {
       font-weight: bold;
@@ -45,6 +46,12 @@
     }
     #frequency {
       color: #555;
+      margin-bottom: 5px;
+    }
+    #interval-display {
+      font-size: 20px;
+      color: #2c3e50;
+      min-height: 24px;
     }
     #error-msg {
       margin-top: 15px;
@@ -55,17 +62,33 @@
   </style>
 </head>
 <body>
-  <h1>Humming Note Identifier (Noise‐Reduced)</h1>
+  <h1>Humming Note Identifier<br>(Noise‐Reduced + Interval)</h1>
   <button id="toggle-button">Start Listening</button>
   <div id="output">
     <div id="note-name">—</div>
     <div id="frequency">—</div>
+    <div id="interval-display">—</div>
   </div>
   <div id="error-msg"></div>
 
   <script>
     // ====== UTILS & DATA ======
     const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const INTERVAL_NAMES = {
+      0: 'Unison',
+      1: 'Minor Second',
+      2: 'Major Second',
+      3: 'Minor Third',
+      4: 'Major Third',
+      5: 'Perfect Fourth',
+      6: 'Tritone',
+      7: 'Perfect Fifth',
+      8: 'Minor Sixth',
+      9: 'Major Sixth',
+      10: 'Minor Seventh',
+      11: 'Major Seventh',
+      12: 'Octave'
+    };
     const A4_MIDI = 69, A4_FREQ = 440.0;
     const allNotes = [];
     for (let m = 36; m <= 84; m++) {
@@ -73,6 +96,7 @@
       const octave = Math.floor(m/12) - 1;
       allNotes.push({ midi: m, name: NOTE_NAMES[m % 12] + octave, freq });
     }
+
     function findClosestNote(freq) {
       let best = null, bestDist = Infinity;
       for (let note of allNotes) {
@@ -84,18 +108,29 @@
       }
       return best;
     }
+
+    function medianOfArray(arr) {
+      const sorted = arr.slice().sort((a, b) => a - b);
+      const len = sorted.length;
+      if (len === 0) return null;
+      const mid = Math.floor(len / 2);
+      return (len % 2 === 0)
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+    }
+
     function autoCorrelate(buffer, sampleRate) {
       let SIZE = buffer.length;
       let rms = 0;
       for (let i = 0; i < SIZE; i++) rms += buffer[i] * buffer[i];
       rms = Math.sqrt(rms / SIZE);
-      if (rms < 0.02) return -1;  // Noise gate: ignore if < 0.02 RMS
+      if (rms < 0.02) return -1;  // Noise gate: ignore if <0.02 RMS
 
-      let r1 = 0, r2 = SIZE-1, threshold = 0.2;
-      for (let i = 0; i < SIZE/2; i++) {
+      let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
         if (Math.abs(buffer[i]) < threshold) { r1 = i; break; }
       }
-      for (let i = 1; i < SIZE/2; i++) {
+      for (let i = 1; i < SIZE / 2; i++) {
         if (Math.abs(buffer[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
       }
       const trimmed = buffer.slice(r1, r2);
@@ -107,7 +142,7 @@
         }
       }
       let d = 0;
-      while (c[d] > c[d+1]) d++;
+      while (c[d] > c[d + 1]) d++;
       let maxval = -1, maxpos = -1;
       for (let i = d; i < SIZE; i++) {
         if (c[i] > maxval) {
@@ -116,20 +151,23 @@
         }
       }
       let T0 = maxpos;
-      const x1 = c[T0-1], x2 = c[T0], x3 = c[T0+1];
-      const a = (x1 + x3 - 2*x2)/2;
-      const b = (x3 - x1)/2;
-      if (a) T0 = T0 - b/(2*a);
+      const x1 = c[T0 - 1], x2 = c[T0], x3 = c[T0 + 1];
+      const a = (x1 + x3 - 2 * x2) / 2;
+      const b = (x3 - x1) / 2;
+      if (a) T0 = T0 - b / (2 * a);
       return sampleRate / T0;
     }
 
     // ====== STATE & ELEMENTS ======
     let audioContext = null, analyserNode = null, mediaStreamSource = null;
     let listening = false;
-    let stabilityBuffer = [];
+    let pitchHistory = []; // {value, time}
+    let prevMedian = null;
+
     const toggleBtn = document.getElementById('toggle-button');
     const noteNameDiv = document.getElementById('note-name');
     const freqDiv = document.getElementById('frequency');
+    const intervalDiv = document.getElementById('interval-display');
     const errorMsgDiv = document.getElementById('error-msg');
 
     async function checkMicPermission() {
@@ -165,7 +203,7 @@
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaStreamSource = audioContext.createMediaStreamSource(stream);
 
-        // Insert a high‐pass filter at 80 Hz to cut low rumble
+        // High-pass filter at 80 Hz
         const filter = audioContext.createBiquadFilter();
         filter.type = 'highpass';
         filter.frequency.value = 80;
@@ -181,8 +219,12 @@
         toggleBtn.classList.add('listening');
         noteNameDiv.textContent = '…';
         freqDiv.textContent = '…';
+        intervalDiv.textContent = '—';
+        pitchHistory = [];
+        prevMedian = null;
 
         listenLoop();
+        medianLoop();
       } catch (err) {
         console.error('getUserMedia error:', err);
         if (err.name === 'NotAllowedError') {
@@ -206,6 +248,7 @@
       toggleBtn.classList.remove('listening');
       noteNameDiv.textContent = '—';
       freqDiv.textContent = '—';
+      intervalDiv.textContent = '—';
     }
 
     function listenLoop() {
@@ -216,44 +259,52 @@
         if (!listening) return;
         analyserNode.getFloatTimeDomainData(buffer);
 
-        // Run pitch detection only if RMS > 0.02 (noise gate)
+        // Compute RMS
         let rms = 0;
         for (let i = 0; i < buffer.length; i++) rms += buffer[i] * buffer[i];
         rms = Math.sqrt(rms / buffer.length);
         if (rms > 0.02) {
           const pitch = autoCorrelate(buffer, audioContext.sampleRate);
+          const now = performance.now();
           if (pitch !== -1) {
-            stabilityBuffer.push(pitch);
-            const now = performance.now();
-            // Keep only last 100 ms values
-            stabilityBuffer = stabilityBuffer.filter(item => item.time > now - 100);
-            // If we have been stable (stddev < 20 cents) for ≥100 ms, update display
-            if (stabilityBuffer.length >= 3) {
-              const freqs = stabilityBuffer.map(item => item.value);
-              const avg = freqs.reduce((a,b) => a+b)/freqs.length;
-              const diffs = freqs.map(f => 1200 * Math.log2(f/avg));
-              const stddev = Math.sqrt(diffs.reduce((s,d) => s + d*d, 0)/diffs.length);
-              if (stddev < 20) {
-                const closest = findClosestNote(avg);
-                if (closest) {
-                  noteNameDiv.textContent = closest.name;
-                  freqDiv.textContent = avg.toFixed(2) + ' Hz';
-                }
-              }
-            } else {
-              stabilityBuffer.push({ value: pitch, time: now });
+            // Update live display
+            const closest = findClosestNote(pitch);
+            if (closest) {
+              noteNameDiv.textContent = closest.name;
+              freqDiv.textContent = pitch.toFixed(2) + ' Hz';
             }
+            // Append to history
+            pitchHistory.push({ value: pitch, time: now });
           }
         }
-
         requestAnimationFrame(update);
       }
       requestAnimationFrame(update);
     }
 
+    function medianLoop() {
+      if (!listening) return;
+      const now = performance.now();
+      // Keep only last 1000 ms
+      pitchHistory = pitchHistory.filter(item => item.time >= now - 1000);
+      const values = pitchHistory.map(item => item.value).filter(v => v > 0);
+      if (values.length) {
+        const med = medianOfArray(values);
+        if (prevMedian !== null) {
+          const semitoneDiff = 12 * Math.log2(med / prevMedian);
+          const rounded = Math.round(semitoneDiff);
+          if (rounded !== 0 && Math.abs(semitoneDiff - rounded) < 0.5) {
+            const intervalName = INTERVAL_NAMES[Math.abs(rounded)] || `${rounded} semitones`;
+            intervalDiv.textContent = (rounded > 0 ? '+' : '-') + intervalName;
+          }
+        }
+        prevMedian = med;
+      }
+      setTimeout(medianLoop, 200); // check 5 times per second
+    }
+
     toggleBtn.addEventListener('click', () => {
       if (!listening) {
-        stabilityBuffer = [];
         startListening();
       } else {
         stopListening();
