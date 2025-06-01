@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Hum the Note Game</title>
+  <!-- VexFlow (for notation rendering) -->
+  <script src="https://unpkg.com/vexflow/releases/vexflow-min.js"></script>
+  <style>
+    /* --- Basic Reset & Layout --- */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f0f8ff;
+      padding: 20px;
+      color: #333;
+    }
+    h1 {
+      margin-bottom: 10px;
+      color: #2c3e50;
+    }
+    /* --- Container for notation and feedback --- */
+    #game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      max-width: 500px;
+      width: 100%;
+    }
+    #notation {
+      width: 100%;
+      height: 140px;
+      margin-bottom: 20px;
+    }
+    /* --- Pitch meter (visual feedback) --- */
+    #pitch-meter {
+      width: 100%;
+      height: 10px;
+      background: #ddd;
+      border-radius: 5px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    #pitch-meter-fill {
+      width: 0%;
+      height: 100%;
+      background: #3498db;
+      transition: width 0.05s;
+    }
+    /* --- Score & Timer --- */
+    #stats {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      margin-bottom: 20px;
+      font-size: 1rem;
+    }
+    #stats div {
+      background: #ecf0f1;
+      padding: 10px;
+      border-radius: 5px;
+      min-width: 45%;
+      text-align: center;
+      font-weight: bold;
+    }
+    /* --- Feedback overlay (green/red flash) --- */
+    #feedback-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0;
+      border-radius: 8px;
+    }
+    /* --- Controls (start, settings) --- */
+    #controls {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .control-group {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    label {
+      font-size: 0.9rem;
+    }
+    select, button {
+      padding: 8px 12px;
+      font-size: 1rem;
+      border-radius: 5px;
+      border: 1px solid #bdc3c7;
+      background: #ffffff;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #bdc3c7;
+      cursor: not-allowed;
+    }
+    /* --- Final Results Modal --- */
+    #results-modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0);
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+      z-index: 10;
+      transition: transform 0.2s ease-in-out;
+      width: 300px;
+      text-align: center;
+    }
+    #results-modal.show {
+      transform: translate(-50%, -50%) scale(1);
+    }
+    #results-modal h2 {
+      margin-bottom: 10px;
+      color: #27ae60;
+    }
+    #results-modal p {
+      margin: 10px 0;
+      font-size: 1rem;
+    }
+    #results-modal button {
+      margin-top: 15px;
+      background: #27ae60;
+      color: #fff;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎵 Hum the Note Game 🎵</h1>
+  <div id="game-container">
+    <!-- Notation Canvas -->
+    <div id="notation"></div>
+    <!-- Pitch Meter -->
+    <div id="pitch-meter">
+      <div id="pitch-meter-fill"></div>
+    </div>
+    <!-- Stats: Score & Time -->
+    <div id="stats">
+      <div id="score-display">Score: 0</div>
+      <div id="timer-display">Time: 60s</div>
+    </div>
+    <!-- Feedback Overlay -->
+    <div id="feedback-overlay"></div>
+    <!-- Controls -->
+    <div id="controls">
+      <!-- Time Selector -->
+      <div class="control-group">
+        <label for="time-select">Time Limit:</label>
+        <select id="time-select">
+          <option value="30">30 s</option>
+          <option value="60" selected>60 s</option>
+          <option value="120">120 s</option>
+        </select>
+      </div>
+      <!-- Octave Shift -->
+      <div class="control-group">
+        <label for="octave-select">Starting C:</label>
+        <select id="octave-select">
+          <option value="-1">C2 (Shift Down 1 Octave)</option>
+          <option value="0" selected>C3 (Default)</option>
+          <option value="1">C4 (Shift Up 1 Octave)</option>
+        </select>
+      </div>
+      <!-- Start Button -->
+      <button id="start-button">Start Game</button>
+    </div>
+  </div>
+
+  <!-- Results Modal -->
+  <div id="results-modal">
+    <h2>Time’s Up!</h2>
+    <p id="final-score">You scored 0 notes.</p>
+    <p id="avg-rate">Average: 0 notes/min</p>
+    <button id="play-again-button">Play Again</button>
+  </div>
+
+  <script>
+    // -----------------------
+    // --- CONFIG & UTILS  ---
+    // -----------------------
+
+    // Note frequencies (A4 = 440 Hz). We'll generate a map from MIDI note numbers (e.g., 60 = C4) to freq.
+    const A4_MIDI = 69;
+    const A4_FREQ = 440.0;
+    function midiToFreq(m) {
+      return A4_FREQ * Math.pow(2, (m - A4_MIDI) / 12);
+    }
+
+    // Build an array of note names and corresponding MIDI numbers from MIDI 36 (C2) up to MIDI 84 (C6).
+    const NOTE_NAMES = [
+      'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'
+    ];
+    let allNotes = []; // { midi: int, name: string, freq: number }
+    for (let m = 36; m <= 84; m++) {
+      const octave = Math.floor(m / 12) - 1;
+      const name = NOTE_NAMES[m % 12] + octave;
+      allNotes.push({ midi: m, name: name, freq: midiToFreq(m) });
+    }
+
+    // Given a frequency f, find the closest note object in allNotes (by minimum abs(cents) distance).
+    function findClosestNoteObj(freq) {
+      let best = null;
+      let bestDist = Infinity;
+      for (let note of allNotes) {
+        // distance in cents = 1200 * log2(freq / note.freq)
+        let cents = Math.abs(1200 * Math.log2(freq / note.freq));
+        if (cents < bestDist) {
+          bestDist = cents;
+          best = note;
+        }
+      }
+      return { note: best, centsOff: bestDist };
+    }
+
+    // Given a frequency, return true if it falls into the same semitone‐“bin” as targetMidi.
+    function isInTargetBin(freq, targetMidi) {
+      const candidate = findClosestNoteObj(freq).note;
+      return candidate.midi === targetMidi;
+    }
+
+    // Stability check: return true if an array of frequency samples has max excursion < threshold (in cents).
+    function isStableFreq(freqArray, thresholdCents = 50) {
+      if (freqArray.length < 2) return false;
+      let minFreq = Math.min(...freqArray);
+      let maxFreq = Math.max(...freqArray);
+      let centsDiff = Math.abs(1200 * Math.log2(maxFreq / minFreq));
+      return centsDiff <= thresholdCents;
+    }
+
+    // Convert a VexFlow‐friendly note (e.g., "c/4") from a MIDI number:
+    function midiToVexNoteString(midi) {
+      const octave = Math.floor(midi / 12) - 1; // MIDI 60 → octave = 4
+      const nameNoOct = NOTE_NAMES[midi % 12].toLowerCase().replace('#', '#');
+      return nameNoOct + "/" + octave;
+    }
+
+    // ----------------------------------------------------
+    // --- BUILD LEVELS: 4-SEMITONE START, THEN ±2-SEMITONE  ---
+    // ----------------------------------------------------
+    function buildLevels(baseRootMidi = 48 /* C3 = 48 */, maxLevels = 10) {
+      let levels = [];
+      // Level 1: 4-semitone span from baseRootMidi to baseRootMidi + 4 (inclusive)
+      const initialLow = baseRootMidi;
+      const initialHigh = Math.min(baseRootMidi + 4, 84); // clamp to MIDI 84 max
+      let lvl1List = [];
+      for (let m = initialLow; m <= initialHigh; m++) {
+        lvl1List.push(m);
+      }
+      levels.push({
+        name: `Level 1 (4 semitones: ${NOTE_NAMES[initialLow % 12]}${Math.floor(initialLow/12)-1} → ${NOTE_NAMES[initialHigh % 12]}${Math.floor(initialHigh/12)-1})`,
+        midiList: lvl1List
+      });
+
+      // Subsequent levels: expand ±2 semitones each time
+      let low = initialLow;
+      let high = initialHigh;
+      for (let lvl = 2; lvl <= maxLevels; lvl++) {
+        low = Math.max(36, low - 2);
+        high = Math.min(84, high + 2);
+        let arr = [];
+        for (let m = low; m <= high; m++) {
+          arr.push(m);
+        }
+        levels.push({
+          name: `Level ${lvl} (±${2*(lvl-1)} semitones: ${NOTE_NAMES[low % 12]}${Math.floor(low/12)-1} → ${NOTE_NAMES[high % 12]}${Math.floor(high/12)-1})`,
+          midiList: arr
+        });
+      }
+      return levels;
+    }
+
+    // ---------------------------
+    // --- GLOBAL GAME STATE  ---
+    // ---------------------------
+
+    let audioContext = null;
+    let mediaStreamSource = null;
+    let analyserNode = null;
+
+    let isGameRunning = false;
+    let currentLevelIndex = 0;    // index into levels[]
+    let levels = [];              // filled in on init
+    let octaveShift = 0;          // -1, 0, +1  → baseRootMidi = 48 + (octaveShift * 12)
+    let targetMidi = null;        // MIDI number of current target note
+    let targetVFNote = null;      // VexFlow voice/stave note
+    let lastHitTimestamps = [];   // for rolling hits/min calculation
+    let totalHits = 0;
+    let gameDuration = 60;        // seconds (user‐selectable)
+    let timeRemaining = 0;        // seconds
+    let timerInterval = null;
+
+    // For stability: buffer of recent freq samples during a single “attempt”
+    let freqBuffer = [];
+    let isAttemptActive = false;   // mark when user starts humming
+    let attemptStartTime = null;
+
+    // VexFlow renderer objects
+    let vfRenderer, vfContext, vfStave;
+
+    // HTML Elements
+    const notationDiv = document.getElementById("notation");
+    const pitchMeterFill = document.getElementById("pitch-meter-fill");
+    const scoreDisplay = document.getElementById("score-display");
+    const timerDisplay = document.getElementById("timer-display");
+    const feedbackOverlay = document.getElementById("feedback-overlay");
+    const startButton = document.getElementById("start-button");
+    const timeSelect = document.getElementById("time-select");
+    const octaveSelect = document.getElementById("octave-select");
+    const resultsModal = document.getElementById("results-modal");
+    const finalScoreP = document.getElementById("final-score");
+    const avgRateP = document.getElementById("avg-rate");
+    const playAgainButton = document.getElementById("play-again-button");
+
+    // -----------------------------
+    // --- INITIAL SETUP & DRAW  ---
+    // -----------------------------
+
+    function initGame() {
+      // Build levels based on chosen C (octaveShift)
+      levels = buildLevels(48 + octaveShift * 12);
+
+      // Initialize VexFlow
+      vfRenderer = new Vex.Flow.Renderer(notationDiv, Vex.Flow.Renderer.Backends.SVG);
+      vfRenderer.resize(480, 140);
+      vfContext = vfRenderer.getContext();
+      vfStave = new Vex.Flow.Stave(10, 10, 460);
+      vfStave.addClef("treble").addTimeSignature("");
+      vfStave.setContext(vfContext).draw();
+
+      currentLevelIndex = 0;
+      pickNewTarget();
+    }
+
+    function clearVexNotes() {
+      vfContext.clear();
+      vfStave.setContext(vfContext).draw();
+    }
+
+    function drawTargetNote() {
+      clearVexNotes();
+      vfStave.setContext(vfContext).draw();
+      if (targetVFNote) {
+        targetVFNote.setContext(vfContext).draw();
+      }
+    }
+
+    function pickNewTarget() {
+      const midiList = levels[currentLevelIndex].midiList;
+      const randIndex = Math.floor(Math.random() * midiList.length);
+      targetMidi = midiList[randIndex];
+      const vfNoteSpec = {
+        keys: [midiToVexNoteString(targetMidi)],
+        duration: "q"
+      };
+      targetVFNote = new Vex.Flow.StaveNote(vfNoteSpec)
+        .addModifier(new Vex.Flow.Articulation("a.").setPosition(3), 0);
+      drawTargetNote();
+    }
+
+    // -----------------------------------
+    // --- PITCH DETECTION (AUTOCORR)  ---
+    // -----------------------------------
+
+    function autoCorrelate(buffer, sampleRate) {
+      // Adapted from Chris Wilson’s example
+      let SIZE = buffer.length;
+      let rms = 0;
+      for (let i = 0; i < SIZE; i++) {
+        let val = buffer[i];
+        rms += val * val;
+      }
+      rms = Math.sqrt(rms / SIZE);
+      if (rms < 0.01) return -1;
+
+      let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
+        if (Math.abs(buffer[i]) < threshold) {
+          r1 = i;
+          break;
+        }
+      }
+      for (let i = 1; i < SIZE / 2; i++) {
+        if (Math.abs(buffer[SIZE - i]) < threshold) {
+          r2 = SIZE - i;
+          break;
+        }
+      }
+
+      buffer = buffer.slice(r1, r2);
+      SIZE = buffer.length;
+      let c = new Array(SIZE).fill(0);
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE - i; j++) {
+          c[i] += buffer[j] * buffer[j + i];
+        }
+      }
+      let d = 0;
+      while (c[d] > c[d + 1]) d++;
+      let maxval = -1, maxpos = -1;
+      for (let i = d; i < SIZE; i++) {
+        if (c[i] > maxval) {
+          maxval = c[i];
+          maxpos = i;
+        }
+      }
+      let T0 = maxpos;
+      let x1 = c[T0 - 1];
+      let x2 = c[T0];
+      let x3 = c[T0 + 1];
+      let a = (x1 + x3 - 2 * x2) / 2;
+      let b = (x3 - x1) / 2;
+      if (a) T0 = T0 - b / (2 * a);
+      return sampleRate / T0;
+    }
+
+    function startPitchDetection() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("getUserMedia is not supported by your browser");
+        return;
+      }
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      analyserNode = audioContext.createAnalyser();
+      analyserNode.fftSize = 2048;
+      analyserNode.smoothingTimeConstant = 0.8;
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaStreamSource = audioContext.createMediaStreamSource(stream);
+        mediaStreamSource.connect(analyserNode);
+
+        const bufferLen = 2048;
+        const buffer = new Float32Array(bufferLen);
+
+        function updatePitch() {
+          if (!isGameRunning) return;
+          analyserNode.getFloatTimeDomainData(buffer);
+          const pitch = autoCorrelate(buffer, audioContext.sampleRate);
+          if (pitch !== -1) {
+            handleDetectedPitch(pitch);
+          }
+          requestAnimationFrame(updatePitch);
+        }
+        updatePitch();
+      }).catch(err => {
+        console.error("Error accessing mic:", err);
+        alert("Microphone access was denied.");
+      });
+    }
+
+    // ----------------------------------------
+    // --- HANDLE EACH DETECTED FREQUENCY  ---
+    // ----------------------------------------
+
+    function handleDetectedPitch(freq) {
+      const targetFreq = midiToFreq(targetMidi);
+      const centsDiff = 1200 * Math.log2(freq / targetFreq);
+      let closeness = Math.max(0, 1 - Math.abs(centsDiff) / 200);
+      pitchMeterFill.style.width = `${closeness * 100}%`;
+
+      const now = performance.now();
+      if (!isAttemptActive) {
+        isAttemptActive = true;
+        attemptStartTime = now;
+        freqBuffer = [freq];
+      } else {
+        freqBuffer.push(freq);
+      }
+
+      if (now - attemptStartTime >= 200) {
+        if (!isStableFreq(freqBuffer, 50)) {
+          flashFeedback("red");
+          resetAttempt();
+          return;
+        }
+        if (isInTargetBin(freq, targetMidi)) {
+          registerHit();
+          return;
+        } else {
+          if (now - attemptStartTime > 1000) {
+            flashFeedback("orange");
+            resetAttempt();
+            return;
+          }
+        }
+      }
+    }
+
+    function resetAttempt() {
+      isAttemptActive = false;
+      freqBuffer = [];
+      attemptStartTime = null;
+    }
+
+    function registerHit() {
+      totalHits++;
+      scoreDisplay.textContent = `Score: ${totalHits}`;
+      flashFeedback("green");
+      lastHitTimestamps.push(Date.now());
+      const cutoff = Date.now() - 60000;
+      lastHitTimestamps = lastHitTimestamps.filter(ts => ts >= cutoff);
+
+      const hitsLastMin = lastHitTimestamps.length;
+      // hits per minute = hitsLastMin
+      if (hitsLastMin > 5 && currentLevelIndex < levels.length - 1) {
+        currentLevelIndex++;
+      } else if (hitsLastMin < 3 && currentLevelIndex > 0) {
+        currentLevelIndex--;
+      }
+
+      pickNewTarget();
+      resetAttempt();
+    }
+
+    function flashFeedback(color) {
+      feedbackOverlay.style.background = color === "green"
+        ? "rgba(46, 204, 113, 0.5)"
+        : color === "red"
+        ? "rgba(231, 76, 60, 0.5)"
+        : "rgba(241, 196, 15, 0.5)";
+      feedbackOverlay.style.opacity = 1;
+      setTimeout(() => {
+        feedbackOverlay.style.opacity = 0;
+      }, 150);
+    }
+
+    // ------------------------
+    // --- GAME LOOP / UI   ---
+    // ------------------------
+
+    function startGame() {
+      totalHits = 0;
+      scoreDisplay.textContent = "Score: 0";
+      lastHitTimestamps = [];
+      currentLevelIndex = 0;
+      timeRemaining = parseInt(timeSelect.value);
+      timerDisplay.textContent = `Time: ${timeRemaining}s`;
+      startButton.disabled = true;
+      timeSelect.disabled = true;
+      octaveSelect.disabled = true;
+      resultsModal.classList.remove("show");
+      isGameRunning = true;
+
+      octaveShift = parseInt(octaveSelect.value);
+      levels = buildLevels(48 + octaveShift * 12);
+
+      pickNewTarget();
+      if (!audioContext) {
+        startPitchDetection();
+      }
+      timerInterval = setInterval(() => {
+        timeRemaining--;
+        if (timeRemaining <= 0) {
+          endGame();
+        } else {
+          timerDisplay.textContent = `Time: ${timeRemaining}s`;
+        }
+      }, 1000);
+    }
+
+    function endGame() {
+      isGameRunning = false;
+      clearInterval(timerInterval);
+      finalScoreP.textContent = `You scored ${totalHits} note${totalHits === 1 ? "" : "s"}.`;
+      const hitsLastMin = lastHitTimestamps.length;
+      const avgRate = ((hitsLastMin / 60) * 60).toFixed(1);
+      avgRateP.textContent = `Average rate: ${avgRate} notes/min.`;
+      resultsModal.classList.add("show");
+      startButton.disabled = false;
+      timeSelect.disabled = false;
+      octaveSelect.disabled = false;
+    }
+
+    // -----------------------
+    // --- EVENT BINDINGS  ---
+    // -----------------------
+
+    startButton.addEventListener("click", () => startGame());
+    playAgainButton.addEventListener("click", () => startGame());
+
+    // Initialize on load
+    window.addEventListener("load", () => {
+      initGame();
+    });
+  </script>
+</body>
+</html>
